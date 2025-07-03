@@ -2,3 +2,6 @@ pandas
 numpy
 aiohttp
 tqdm
+lxml
+beautifulsoup4
+
