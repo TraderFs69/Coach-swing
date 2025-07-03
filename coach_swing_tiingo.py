@@ -5,8 +5,8 @@ import aiohttp
 from tqdm.asyncio import tqdm
 import random
 
-SLEEP_MIN = 0.1   # plus court car plan payant
-SLEEP_MAX = 0.5
+SLEEP_MIN = 1.0   # Pause plus longue pour respecter les quotas Tiingo
+SLEEP_MAX = 3.0
 TIMEOUT_SECONDS = 15
 API_KEY = "d5290e9d3b7a656b8944408846acbbb20157b3d6"
 
@@ -105,8 +105,8 @@ def calculate_indicators(df):
 
 async def main():
     async with aiohttp.ClientSession() as session:
-        for i in tqdm(range(0, len(tickers), 5), desc="Scan par lots de 5"):
-            batch = tickers[i:i+5]
+        for i in tqdm(range(0, len(tickers), 2), desc="Scan par lots de 2"):  # réduis le batch à 2
+            batch = tickers[i:i+2]
             tasks = [fetch_ticker(session, ticker) for ticker in batch]
             responses = await asyncio.gather(*tasks)
             for ticker, df in responses:
