@@ -1,0 +1,14 @@
+
+# Environnements
+.env
+__pycache__/
+*.pyc
+
+# Données temporaires
+*.csv
+*.log
+*.tmp
+
+# Fichiers spécifiques à l’éditeur
+.vscode/
+.idea/
