@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -6,29 +5,65 @@ import requests
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=60*60)
 def get_sp500_constituents():
-    """Scrape the current S&P 500 constituents from Wikipedia.
-    Returns a (df, tickers) tuple.
+    """Fetch current S&P 500 constituents.
+    1) Preferred: scrape Wikipedia with a real User-Agent (avoids 403 on some hosts)
+    2) Fallback: if SP500_CSV_URL is provided in st.secrets, load from that CSV (must include 'Symbol' & 'Security').
+    Returns (df, tickers).
     """
-    # Use pandas to read the first table on the page
-    tables = pd.read_html(WIKI_URL)
-    df = tables[0].copy()
+    # 2) Fallback via secrets (use a personal gist/raw CSV if needed)
+    csv_url = st.secrets.get("SP500_CSV_URL")
+    if csv_url:
+        try:
+            df = pd.read_csv(csv_url)
+            if "Symbol" not in df.columns or "Security" not in df.columns:
+                raise ValueError("CSV must include 'Symbol' and 'Security' columns")
+            df["Symbol_yf"] = df["Symbol"].astype(str).str.replace(".", "-", regex=False)
+            df = df.rename(columns={
+                "Security": "Company",
+                "GICS Sector": "Sector",
+                "GICS Sub-Industry": "SubIndustry",
+                "Headquarters Location": "HQ",
+                "Date first added": "DateAdded",
+            })
+            return df, df["Symbol_yf"].tolist()
+        except Exception as e:
+            st.warning(f"Impossible de charger le CSV (SP500_CSV_URL): {e}. On tente Wikipedia…")
 
-    # Normalize ticker symbols for yfinance (BRK.B -> BRK-B, BF.B -> BF-B)
-    df["Symbol_yf"] = df["Symbol"].str.replace(".", "-", regex=False)
+    # 1) Wikipedia scrape with requests + headers (avoid urllib 403)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; StreamlitApp/1.0; +https://streamlit.io)",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
 
-    # Standardize column names we care about
-    df = df.rename(columns={
-        "Security": "Company",
-        "GICS Sector": "Sector",
-        "GICS Sub-Industry": "SubIndustry",
-        "Headquarters Location": "HQ",
-        "Date first added": "DateAdded",
-    })
+    import time, random, requests
+    WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
-    tickers = df["Symbol_yf"].tolist()
-    return df, tickers
+    # small retry loop for transient HTTP errors
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(WIKI_URL, headers=headers, timeout=20)
+            resp.raise_for_status()
+            tables = pd.read_html(resp.text)
+            df = tables[0].copy()
+            df["Symbol_yf"] = df["Symbol"].astype(str).str.replace(".", "-", regex=False)
+            df = df.rename(columns={
+                "Security": "Company",
+                "GICS Sector": "Sector",
+                "GICS Sub-Industry": "SubIndustry",
+                "Headquarters Location": "HQ",
+                "Date first added": "DateAdded",
+            })
+            tickers = df["Symbol_yf"].tolist()
+            return df, tickers
+        except Exception as e:
+            last_err = e
+            time.sleep(1.2 + random.random())
+
+    # If everything failed, surface a clear message
+    raise RuntimeError(f"Échec de récupération S&P 500 sur Wikipedia: {last_err}")
 
 @st.cache_data(show_spinner=False)
 def download_prices(tickers: list[str], period: str = "1d", interval: str = "1d") -> pd.DataFrame:
@@ -139,3 +174,4 @@ st.markdown(
     - Les variations quotidiennes sont calculées à partir des deux dernières clôtures disponibles.
     """
 )
+
