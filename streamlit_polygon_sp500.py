@@ -7,7 +7,7 @@ import os
 from polygon import RESTClient
 
 # Chargement de la clé API depuis les variables d'environnement
-API_KEY = os.getenv("POLYGON_API_KEY")
+API_KEY = os.getenv("C5ECJcXC6KtglCOiYPUBD1LeN5ttdfa5")
 client = RESTClient(API_KEY)
 
 # 📅 Sélecteur de date
