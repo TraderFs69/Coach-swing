@@ -147,11 +147,33 @@ if sel_tickers:
 
     # Merge with company metadata
     merged = df.merge(prices, left_on="Symbol_yf", right_on="Ticker", how="left")
-    # Tidy display
-    show_cols = [
-        "Symbol_yf", "Company", "Sector", "SubIndustry", "HQ", "DateAdded", "Close", "ChangePct", "Volume"
-    ]
-    table = merged[show_cols].rename(columns={"Symbol_yf": "Ticker"})
+    # Tidy display — be robust if some metadata columns are missing
+preferred_cols = [
+    "Symbol_yf", "Company", "Sector", "SubIndustry", "HQ", "DateAdded", "Close", "ChangePct", "Volume"
+]
+available_cols = [c for c in preferred_cols if c in merged.columns]
+if "Symbol_yf" not in available_cols and "Ticker" in merged.columns:
+    available_cols = ["Ticker"] + [c for c in available_cols if c != "Symbol_yf"]
+
+# Create table with only available columns
+if available_cols:
+    table = merged[available_cols].copy()
+else:
+    # fallback minimal view
+    table = merged.copy()
+
+# Rename Symbol_yf -> Ticker if present
+if "Symbol_yf" in table.columns:
+    table = table.rename(columns={"Symbol_yf": "Ticker"})
+
+# Ensure optional columns exist for consistent display
+for col in ["Company", "Sector", "SubIndustry", "HQ", "DateAdded", "Close", "ChangePct", "Volume"]:
+    if col not in table.columns:
+        table[col] = None
+
+# Reorder nicely when possible
+order = [c for c in ["Ticker", "Company", "Sector", "SubIndustry", "HQ", "DateAdded", "Close", "ChangePct", "Volume"] if c in table.columns]
+table = table[order]
 
     # Sort by daily change desc by default
     sort_by = st.selectbox("Trier par", ["ChangePct", "Volume", "Ticker", "Company"]) 
@@ -174,4 +196,3 @@ st.markdown(
     - Les variations quotidiennes sont calculées à partir des deux dernières clôtures disponibles.
     """
 )
-
