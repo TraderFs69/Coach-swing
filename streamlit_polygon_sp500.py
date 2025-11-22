@@ -1,11 +1,11 @@
-# streamlit_yfinance_coach_swing_ha.py
+# streamlit_yfinance_coach_swing_ha.py 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import requests
-import time
-import random
+import requests  # <- plus vraiment nécessaire si tu veux nettoyer
+import time      # <- idem
+import random    # <- idem
 
 # ============================================================
 #  Coach Swing – Scanner S&P 500 (Heikin Ashi, Yahoo Finance)
@@ -47,65 +47,50 @@ def to_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # ---------------------------------------------
-# S&P 500 constituents (Wikipedia or fallback)
+# S&P 500 constituents (via fichier Excel local)
 # ---------------------------------------------
 @st.cache_data(show_spinner=False, ttl=60 * 60)
-def get_sp500_constituents():
+def get_sp500_constituents(path: str = "sp500_constituents.xlsx"):
     """
-    Récupère la table du S&P 500 depuis Wikipedia avec un User-Agent.
-    Fallback possible via st.secrets["SP500_CSV_URL"] (CSV avec colonnes 'Symbol' & 'Security').
-    Retourne (df, tickers_yf).
-    """
-    # Fallback CSV
-    csv_url = st.secrets.get("SP500_CSV_URL")
-    if csv_url:
-        try:
-            df = pd.read_csv(csv_url)
-            if "Symbol" not in df.columns or "Security" not in df.columns:
-                raise ValueError("Le CSV doit contenir 'Symbol' et 'Security'")
-            df["Symbol_yf"] = df["Symbol"].astype(str).replace(".", "-", regex=False)
-            df = df.rename(
-                columns={
-                    "Security": "Company",
-                    "GICS Sector": "Sector",
-                    "GICS Sub-Industry": "SubIndustry",
-                    "Headquarters Location": "HQ",
-                    "Date first added": "DateAdded",
-                }
-            )
-            return df, df["Symbol_yf"].tolist()
-        except Exception as e:
-            st.warning(f"CSV fallback échec ({e}). On tente Wikipedia…")
+    Charge la table du S&P 500 depuis un fichier Excel inclus dans le repo.
+    Le fichier doit contenir au minimum une colonne 'Symbol' et 'Security'
+    (comme la table Wikipédia d'origine).
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; StreamlitApp/1.0; +https://streamlit.io)",
-        "Accept-Language": "en-US,en;q=0.9",
+    Retourne (df, tickers_yf) où :
+      - df : DataFrame enrichi avec colonnes 'Company', 'Sector', 'SubIndustry', 'HQ', 'DateAdded', 'Symbol_yf'
+      - tickers_yf : liste des tickers formatés pour Yahoo Finance (BRK-B, etc.)
+    """
+    try:
+        df = pd.read_excel(path)
+    except Exception as e:
+        raise RuntimeError(f"Impossible de charger le fichier {path} : {e}")
+
+    # Vérifie la présence de la colonne des symboles
+    if "Symbol" not in df.columns:
+        raise RuntimeError(
+            f"Le fichier {path} ne contient pas de colonne 'Symbol'. Colonnes trouvées : {list(df.columns)}"
+        )
+
+    # Colonnes typiques de la table Wikipédia : adapte si ton Excel est différent
+    rename_map = {
+        "Security": "Company",
+        "GICS Sector": "Sector",
+        "GICS Sub-Industry": "SubIndustry",
+        "Headquarters Location": "HQ",
+        "Date first added": "DateAdded",
     }
-    WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    # On ne renomme que ce qui existe
+    rename_effective = {k: v for k, v in rename_map.items() if k in df.columns}
+    df = df.rename(columns=rename_effective)
 
-    last_err = None
-    for _ in range(3):
-        try:
-            resp = requests.get(WIKI_URL, headers=headers, timeout=20)
-            resp.raise_for_status()
-            tables = pd.read_html(resp.text)
-            df = tables[0].copy()
-            df["Symbol_yf"] = df["Symbol"].astype(str).str.replace(".", "-", regex=False)
-            df = df.rename(
-                columns={
-                    "Security": "Company",
-                    "GICS Sector": "Sector",
-                    "GICS Sub-Industry": "SubIndustry",
-                    "Headquarters Location": "HQ",
-                    "Date first added": "DateAdded",
-                }
-            )
-            return df, df["Symbol_yf"].tolist()
-        except Exception as e:
-            last_err = e
-            time.sleep(1.2 + random.random())
+    # Crée la colonne Symbol_yf pour Yahoo Finance (BRK.B -> BRK-B)
+    df["Symbol_yf"] = df["Symbol"].astype(str).str.replace(".", "-", regex=False).str.strip()
 
-    raise RuntimeError(f"Échec de récupération du S&P 500 sur Wikipedia : {last_err}")
+    tickers_yf = df["Symbol_yf"].dropna().tolist()
+    if not tickers_yf:
+        raise RuntimeError("La liste de tickers S&P 500 est vide après traitement de l'Excel.")
+
+    return df, tickers_yf
 
 # ---------------------------------------------
 # Indicators & Coach Swing logic replication
@@ -253,8 +238,12 @@ def download_bars(tickers: list[str], period: str, interval: str) -> dict:
 # ---------------------------------------------
 # UI – Filtres & contrôles
 # ---------------------------------------------
-with st.spinner("Chargement de la liste S&P 500 depuis Wikipedia…"):
-    sp_df, all_tickers = get_sp500_constituents()
+with st.spinner("Chargement de la liste S&P 500 depuis le fichier Excel…"):
+    try:
+        sp_df, all_tickers = get_sp500_constituents()
+    except RuntimeError as e:
+        st.error(f"❌ Impossible de charger la liste S&P 500.\n\nDétails : {e}")
+        st.stop()
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
 with c1:
