@@ -14,7 +14,7 @@ WEBHOOK = st.secrets["DISCORD_WEBHOOK"]
 # PARAMÈTRES
 # ======================
 
-FILE_PATH = "/mnt/data/russell3000_constituents.xlsx"
+FILE_PATH = "russell3000_constituents.xlsx"
 TIMEFRAME = "day"
 LOOKBACK_DAYS = 400   # assez pour indicateurs
 SLEEP_API = 0.25      # protection Polygon
