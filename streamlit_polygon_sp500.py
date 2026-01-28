@@ -1,5 +1,5 @@
 # =====================================================
-# COACH SWING — POLYGON (SIGNALS RÉELS)
+# COACH SWING — POLYGON (SIGNALS RÉELS + DISCORD)
 # =====================================================
 import streamlit as st
 import pandas as pd
@@ -8,21 +8,23 @@ import requests
 import time
 from datetime import date, timedelta
 
+# ---------------- CONFIG ----------------
 st.set_page_config(layout="wide")
 st.title("🧭 Coach Swing — Polygon")
 
 POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
+DISCORD_WEBHOOK = st.secrets["DISCORD_WEBHOOK_URL"]
 LOOKBACK = 220
 
-# --------------------------------------------------
-# SESSION
-# --------------------------------------------------
+# ---------------- SESSION ----------------
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "TradingEnAction-CoachSwing/1.0"})
 
-# --------------------------------------------------
-# LOAD TICKERS
-# --------------------------------------------------
+# ---------------- SIGNAL MEMORY ----------------
+if "last_signals" not in st.session_state:
+    st.session_state.last_signals = {}
+
+# ---------------- LOAD TICKERS ----------------
 @st.cache_data
 def load_tickers():
     df = pd.read_excel("russell3000_constituents.xlsx")
@@ -37,9 +39,7 @@ def load_tickers():
 
 TICKERS = load_tickers()
 
-# --------------------------------------------------
-# POLYGON OHLC
-# --------------------------------------------------
+# ---------------- POLYGON OHLC ----------------
 def get_ohlc(ticker, retries=2):
     end = date.today()
     start = end - timedelta(days=LOOKBACK)
@@ -73,10 +73,9 @@ def get_ohlc(ticker, retries=2):
 
     return None
 
-# --------------------------------------------------
-# INDICATEURS
-# --------------------------------------------------
-def EMA(s, n): return s.ewm(span=n, adjust=False).mean()
+# ---------------- INDICATEURS ----------------
+def EMA(s, n): 
+    return s.ewm(span=n, adjust=False).mean()
 
 def macd_5134(close):
     macd = EMA(close, 5) - EMA(close, 13)
@@ -101,9 +100,7 @@ def recent_cross(series, bars=3):
         out |= series.shift(i).fillna(False)
     return out
 
-# --------------------------------------------------
-# COACH SWING LOGIC
-# --------------------------------------------------
+# ---------------- LOGIQUE COACH SWING ----------------
 def coach_swing_signal(df):
     if len(df) < 100:
         return "—"
@@ -129,9 +126,18 @@ def coach_swing_signal(df):
 
     return "—"
 
-# --------------------------------------------------
-# UI
-# --------------------------------------------------
+# ---------------- DISCORD ----------------
+def send_discord_signal(ticker, price, signal):
+    emoji = "🟢" if "BUY" in signal else "🔴"
+    msg = f"{emoji} **{signal}**\n**{ticker}** @ ${price}"
+    payload = {"content": msg}
+
+    try:
+        requests.post(DISCORD_WEBHOOK, json=payload, timeout=5)
+    except Exception:
+        pass
+
+# ---------------- UI ----------------
 limit = st.slider("Nombre de tickers", 50, len(TICKERS), 150)
 show = st.selectbox("Afficher", ["Tous", "BUY seulement", "SELL seulement"])
 
@@ -146,6 +152,14 @@ if st.button("🚀 Scanner Coach Swing"):
 
         signal = coach_swing_signal(df)
         close = round(df["Close"].iloc[-1], 2)
+
+        prev_signal = st.session_state.last_signals.get(t)
+
+        # 🚨 DISCORD — seulement NOUVEAU signal
+        if signal in ["🟢 BUY", "🔴 SELL"] and signal != prev_signal:
+            send_discord_signal(t, close, signal)
+
+        st.session_state.last_signals[t] = signal
 
         rows.append([t, close, signal])
         progress.progress((i + 1) / limit)
