@@ -60,3 +60,33 @@ def adx(df, n=14):
     minus_di = 100 * (minus_dm.rolling(n).sum() / tr)
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     return dx.rolling(n).mean()
+
+def ut_bot(df, key=3, atr_period=10):
+    """
+    Implémentation UT Bot fidèle au Pine Script
+    """
+    atr_val = atr(df, atr_period)
+    loss = key * atr_val
+
+    trail = pd.Series(index=df.index, dtype=float)
+
+    for i in range(len(df)):
+        close = df["close"].iloc[i]
+
+        if i == 0 or pd.isna(atr_val.iloc[i]):
+            trail.iloc[i] = close - loss.iloc[i]
+            continue
+
+        prev_trail = trail.iloc[i - 1]
+        prev_close = df["close"].iloc[i - 1]
+
+        if close > prev_trail and prev_close > prev_trail:
+            trail.iloc[i] = max(prev_trail, close - loss.iloc[i])
+        elif close < prev_trail and prev_close < prev_trail:
+            trail.iloc[i] = min(prev_trail, close + loss.iloc[i])
+        elif close > prev_trail:
+            trail.iloc[i] = close - loss.iloc[i]
+        else:
+            trail.iloc[i] = close + loss.iloc[i]
+
+    return trail
