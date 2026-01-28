@@ -39,19 +39,20 @@ SLEEP_API = 0.4
 PROGRESS_FILE = "scan_progress.json"
 RERUN_DELAY = 5  # secondes entre batchs
 
+# MODE TOLÉRANT : UT obligatoire + (MACD OU STOCH)
+TOLERANT_MODE = True
+
 # ======================================================
 # SESSION HTTP ROBUSTE
 # ======================================================
 
 session = requests.Session()
-
 retries = Retry(
     total=3,
     backoff_factor=1.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET"]
 )
-
 adapter = HTTPAdapter(max_retries=retries)
 session.mount("https://", adapter)
 
@@ -86,6 +87,9 @@ def load_polygon_daily(ticker):
         df["close"] = df["c"]
         df["high"] = df["h"]
         df["low"] = df["l"]
+
+        # Date réelle de la bougie (ms → date)
+        df["date"] = pd.to_datetime(df["t"], unit="ms").dt.date
 
         return df.reset_index(drop=True)
 
@@ -146,9 +150,9 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
         progress.progress((i - start_index) / len(batch_tickers))
         continue
 
-    # ----------------------
+    # ======================
     # INDICATEURS
-    # ----------------------
+    # ======================
 
     ut = ut_bot(df)
     macd_val, macd_sig = macd(df["close"])
@@ -158,21 +162,21 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
     cci_val = cci(df)
     adx_val = adx(df)
 
-    i0 = -1   # aujourd'hui
-    i1 = -2   # hier
+    # --------------------------------------------------
+    # ALIGNEMENT DAILY (DERNIÈRE BOUGIE COMPLÈTE)
+    # --------------------------------------------------
+    i0 = -2  # dernière bougie COMPLÈTE
+    i1 = -3  # précédente
 
-    # ----------------------
-    # LOGIQUE BUY STRICTE (AUJOURD’HUI SEULEMENT)
-    # ----------------------
+    signal_date = df["date"].iloc[i0]
+
+    # ======================
+    # CONDITIONS
+    # ======================
 
     ut_today = (
         df["close"].iloc[i0] > ut.iloc[i0] and
         df["close"].iloc[i1] <= ut.iloc[i1]
-    )
-
-    ut_yesterday = (
-        df["close"].iloc[i1] > ut.iloc[i1] and
-        df["close"].iloc[i1 - 1] <= ut.iloc[i1 - 1]
     )
 
     macd_today = (
@@ -180,20 +184,34 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
         macd_val.iloc[i0] < 0
     )
 
+    stoch_today = k.iloc[i0] > d.iloc[i0]
+
+    ut_yesterday = (
+        df["close"].iloc[i1] > ut.iloc[i1] and
+        df["close"].iloc[i1-1] <= ut.iloc[i1-1]
+    )
+
     macd_yesterday = (
         macd_val.iloc[i1] > macd_sig.iloc[i1] and
         macd_val.iloc[i1] < 0
     )
 
-    stoch_today = k.iloc[i0] > d.iloc[i0]
     stoch_yesterday = k.iloc[i1] > d.iloc[i1]
 
-    buy_today = ut_today and macd_today and stoch_today
-    buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
+    # ======================
+    # BUY STRICT vs TOLÉRANT
+    # ======================
 
-    # ----------------------
+    if TOLERANT_MODE:
+        buy_today = ut_today and (macd_today or stoch_today)
+        buy_yesterday = ut_yesterday and (macd_yesterday or stoch_yesterday)
+    else:
+        buy_today = ut_today and macd_today and stoch_today
+        buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
+
+    # ======================
     # SCORE
-    # ----------------------
+    # ======================
 
     score_today = (
         (rsi_val.iloc[i0] < 40) +
@@ -202,9 +220,9 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
         (rsi_val.iloc[i0] > rsi_ma.iloc[i0])
     )
 
-    # ----------------------
+    # ======================
     # NEW BUY UNIQUEMENT
-    # ----------------------
+    # ======================
 
     if buy_today and not buy_yesterday:
         if score_today >= 3:
@@ -214,7 +232,9 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
         else:
             label = "🔴 BUY ROUGE"
 
-        new_buys.append(f"{label} **{ticker}**")
+        new_buys.append(
+            f"{label} **{ticker}** — 📅 {signal_date}"
+        )
 
     progress.progress((i - start_index) / len(batch_tickers))
     time.sleep(SLEEP_API)
@@ -222,34 +242,32 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
 progress.empty()
 
 # ======================================================
+# DISCORD
+# ======================================================
+
+if len(new_buys) > 0:
+    message = (
+        "🎯 **COACH SWING — NEW BUY DAILY**\n"
+        f"Batch {start_index + 1} → {end_index}\n"
+        f"Mode : {'Tolérant' if TOLERANT_MODE else 'Strict'}\n\n"
+        + "\n".join(new_buys)
+    )
+    send_discord(WEBHOOK, message)
+else:
+    st.info("ℹ️ Aucun NEW BUY confirmé sur la dernière bougie daily")
+
+# ======================================================
 # SAUVEGARDE + RERUN AUTOMATIQUE
 # ======================================================
 
 if end_index >= len(tickers):
-    # Scan COMPLET terminé
     with open(PROGRESS_FILE, "w") as f:
         json.dump({"index": 0}, f)
-
     st.success("✅ Scan Russell 3000 COMPLÉTÉ")
     st.stop()
-
 else:
-    # Sauvegarde progression
     with open(PROGRESS_FILE, "w") as f:
         json.dump({"index": end_index}, f)
-
     st.info("🔄 Batch suivant dans 5 secondes…")
     time.sleep(RERUN_DELAY)
     st.rerun()
-
-# ======================================================
-# DISCORD
-# ======================================================
-
-if new_buys:
-    message = (
-        "🎯 **COACH SWING — NEW BUY DAILY**\n"
-        f"Batch {start_index + 1} → {end_index}\n\n"
-        + "\n".join(new_buys)
-    )
-    send_discord(WEBHOOK, message)
