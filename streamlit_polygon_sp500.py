@@ -1,5 +1,5 @@
 # =====================================================
-# COACH SWING — POLYGON (SIGNALS RÉELS + DISCORD)
+# COACH SWING — POLYGON (FIX SIGNATURE)
 # =====================================================
 import streamlit as st
 import pandas as pd
@@ -8,40 +8,27 @@ import requests
 import time
 from datetime import date, timedelta
 
-# ================= CONFIG =================
 st.set_page_config(layout="wide")
-st.title("🧭 Coach Swing — Polygon")
+st.title("🧭 Coach Swing — Polygon (LIVE FIX)")
 
 POLYGON_KEY = st.secrets["POLYGON_API_KEY"]
 DISCORD_WEBHOOK = st.secrets["DISCORD_WEBHOOK_URL"]
-
-LOOKBACK = 220
+LOOKBACK = 250
 
 # ================= SESSION =================
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "TradingEnAction-CoachSwing/1.0"})
-
-# ================= SIGNAL MEMORY =================
-if "last_signals" not in st.session_state:
-    st.session_state.last_signals = {}
+SESSION.headers.update({"User-Agent": "TradingEnAction-CoachSwing/2.0"})
 
 # ================= LOAD TICKERS =================
 @st.cache_data
 def load_tickers():
     df = pd.read_excel("russell3000_constituents.xlsx")
-    return (
-        df.iloc[:, 0]
-        .dropna()
-        .astype(str)
-        .str.upper()
-        .unique()
-        .tolist()
-    )
+    return df.iloc[:, 0].dropna().astype(str).str.upper().unique().tolist()
 
 TICKERS = load_tickers()
 
-# ================= POLYGON OHLC =================
-def get_ohlc(ticker, retries=2):
+# ================= POLYGON =================
+def get_ohlc(ticker):
     end = date.today()
     start = end - timedelta(days=LOOKBACK)
 
@@ -50,125 +37,107 @@ def get_ohlc(ticker, retries=2):
         f"{start}/{end}?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
     )
 
-    for _ in range(retries):
-        try:
-            r = SESSION.get(url, timeout=20)
-            if r.status_code != 200:
-                return None
-
-            data = r.json()
-            if not data.get("results"):
-                return None
-
-            df = pd.DataFrame(data["results"])
-            df["Open"] = df["o"]
-            df["High"] = df["h"]
-            df["Low"] = df["l"]
-            df["Close"] = df["c"]
-            return df
-
-        except requests.exceptions.Timeout:
-            time.sleep(0.5)
-        except Exception:
+    try:
+        r = SESSION.get(url, timeout=15)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data.get("results"):
             return None
 
-    return None
+        df = pd.DataFrame(data["results"])
+        df["Open"] = df["o"]
+        df["Close"] = df["c"]
+        return df
+
+    except Exception:
+        return None
 
 # ================= INDICATEURS =================
-def EMA(s, n):
-    return s.ewm(span=n, adjust=False).mean()
+def EMA(s, n): return s.ewm(span=n, adjust=False).mean()
 
-def macd_5134(close):
-    macd = EMA(close, 5) - EMA(close, 13)
+def macd_5134(c):
+    macd = EMA(c, 5) - EMA(c, 13)
     signal = EMA(macd, 4)
     return macd, signal
 
-def rsi_wilder(close, n=12):
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/n, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/n, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+def rsi_wilder(c, n=12):
+    d = c.diff()
+    g = d.clip(lower=0)
+    l = -d.clip(upper=0)
+    ag = g.ewm(alpha=1/n, adjust=False).mean()
+    al = l.ewm(alpha=1/n, adjust=False).mean()
+    rs = ag / al.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# ================= COACH SWING LOGIC =================
+# ================= LOGIQUE COACH SWING (FIX) =================
 def coach_swing_signal(df):
     if len(df) < 120:
         return "—"
 
+    # ❗ ON IGNORE LA BOUGIE DU JOUR
+    df = df.iloc[:-1]
+
     o, c = df["Open"], df["Close"]
 
     ema20 = EMA(c, 20)
-    macd, macd_signal = macd_5134(c)
+    macd, macd_sig = macd_5134(c)
     rsi = rsi_wilder(c, 12)
 
-    # ----- SETUP (contexte swing) -----
-    macd_ok = macd.iloc[-1] > macd_signal.iloc[-1]
-    rsi_ok = rsi.iloc[-1] > 40
-    trend_ok = c.iloc[-1] > ema20.iloc[-1]
+    # -------- SETUP (CONTEXT)
+    setup = (
+        c.iloc[-1] > ema20.iloc[-1] and
+        rsi.iloc[-1] > 45 and
+        macd.iloc[-1] > macd_sig.iloc[-1]
+    )
 
-    setup = macd_ok and rsi_ok and trend_ok
+    # -------- TRIGGER (TIMING FLEXIBLE)
+    rsi_turn = rsi.iloc[-1] > rsi.iloc[-3]
+    bullish = (c.iloc[-1] > o.iloc[-1]) or (c.iloc[-2] > o.iloc[-2])
 
-    # ----- TRIGGER -----
-    rsi_up = rsi.iloc[-1] > rsi.iloc[-2]
-    green = c.iloc[-1] > o.iloc[-1]
-
-    if setup and rsi_up and green:
+    if setup and rsi_turn and bullish:
         return "🟢 BUY"
 
-    # ----- SELL (perte de momentum) -----
-    if macd.iloc[-1] < macd_signal.iloc[-1] and rsi.iloc[-1] < 50:
+    # -------- SELL
+    if macd.iloc[-1] < macd_sig.iloc[-1] and rsi.iloc[-1] < 50:
         return "🔴 SELL"
 
     return "—"
 
 # ================= DISCORD =================
-def send_discord_signal(ticker, price, signal):
-    emoji = "🟢" if "BUY" in signal else "🔴"
-    msg = f"{emoji} **{signal}**\n**{ticker}** @ ${price}"
-    payload = {"content": msg}
-
+def send_discord(t, p, s):
+    emoji = "🟢" if "BUY" in s else "🔴"
+    msg = f"{emoji} **{s}**\n**{t}** @ ${p}"
     try:
-        requests.post(DISCORD_WEBHOOK, json=payload, timeout=5)
-    except Exception:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=5)
+    except:
         pass
 
 # ================= UI =================
-limit = st.slider("Nombre de tickers", 50, len(TICKERS), 150)
-show = st.selectbox("Afficher", ["Tous", "BUY seulement", "SELL seulement"])
+limit = st.slider("Tickers", 50, len(TICKERS), 150)
 
 if st.button("🚀 Scanner Coach Swing"):
     rows = []
-    progress = st.progress(0)
+    buys = sells = 0
 
-    for i, t in enumerate(TICKERS[:limit]):
+    for t in TICKERS[:limit]:
         df = get_ohlc(t)
         if df is None:
             continue
 
-        signal = coach_swing_signal(df)
-        close = round(df["Close"].iloc[-1], 2)
+        sig = coach_swing_signal(df)
+        price = round(df["Close"].iloc[-2], 2)
 
-        prev_signal = st.session_state.last_signals.get(t)
+        if sig == "🟢 BUY":
+            buys += 1
+            send_discord(t, price, sig)
 
-        # 📤 DISCORD — seulement NOUVEAU signal
-        if signal in ["🟢 BUY", "🔴 SELL"] and signal != prev_signal:
-            send_discord_signal(t, close, signal)
+        if sig == "🔴 SELL":
+            sells += 1
+            send_discord(t, price, sig)
 
-        st.session_state.last_signals[t] = signal
-        rows.append([t, close, signal])
+        rows.append([t, price, sig])
 
-        progress.progress((i + 1) / limit)
-
-    df_out = pd.DataFrame(rows, columns=["Ticker", "Close", "Signal"])
-
-    if show == "BUY seulement":
-        df_out = df_out[df_out["Signal"] == "🟢 BUY"]
-    elif show == "SELL seulement":
-        df_out = df_out[df_out["Signal"] == "🔴 SELL"]
-
-    if df_out.empty:
-        st.warning("Aucun signal Coach Swing aujourd’hui.")
-    else:
-        st.dataframe(df_out, use_container_width=True)
+    st.success(f"BUY: {buys} | SELL: {sells}")
+    st.dataframe(pd.DataFrame(rows, columns=["Ticker", "Price", "Signal"]),
+                 use_container_width=True)
