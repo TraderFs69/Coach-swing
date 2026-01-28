@@ -37,6 +37,7 @@ LOOKBACK_DAYS = 400
 BATCH_SIZE = 300
 SLEEP_API = 0.4
 PROGRESS_FILE = "scan_progress.json"
+RERUN_DELAY = 5  # secondes entre les batchs
 
 # ======================================================
 # SESSION HTTP ROBUSTE (ANTI TIMEOUT)
@@ -130,7 +131,7 @@ batch_tickers = tickers[start_index:end_index]
 st.caption(f"📦 Batch automatique : {start_index + 1} → {end_index}")
 
 # ======================================================
-# SCAN AUTOMATIQUE (SANS BOUTON)
+# SCAN AUTOMATIQUE
 # ======================================================
 
 st.info("⏳ Scan daily automatique en cours…")
@@ -191,7 +192,7 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
     buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
 
     # ======================
-    # SCORE (IDENTIQUE À TON PINE)
+    # SCORE
     # ======================
 
     score_today = (
@@ -221,16 +222,25 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
 progress.empty()
 
 # ======================================================
-# SAUVEGARDE DE LA PROGRESSION
+# SAUVEGARDE + RERUN AUTOMATIQUE
 # ======================================================
 
 if end_index >= len(tickers):
+    # Scan COMPLET terminé
     with open(PROGRESS_FILE, "w") as f:
         json.dump({"index": 0}, f)
-    st.success("🔁 Scan Russell 3000 complété — redémarrage au prochain cycle")
+
+    st.success("✅ Scan Russell 3000 COMPLÉTÉ")
+    st.stop()
+
 else:
+    # Sauvegarde progression
     with open(PROGRESS_FILE, "w") as f:
         json.dump({"index": end_index}, f)
+
+    st.info("🔄 Batch suivant dans 5 secondes…")
+    time.sleep(RERUN_DELAY)
+    st.experimental_rerun()
 
 # ======================================================
 # DISCORD
@@ -243,6 +253,3 @@ if new_buys:
         + "\n".join(new_buys)
     )
     send_discord(WEBHOOK, message)
-    st.success(f"✅ {len(new_buys)} NEW BUY envoyés sur Discord")
-else:
-    st.info("ℹ️ Aucun NEW BUY aujourd’hui dans ce batch")
