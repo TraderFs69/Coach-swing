@@ -1,248 +1,122 @@
-import streamlit as st
+import numpy as np
 import pandas as pd
-import time
-import json
-import os
-from datetime import datetime, timedelta
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+# ======================
+# MOYENNES
+# ======================
 
-from indicators import ut_bot, macd, stochastic, rsi, sma, cci, adx
-from discord import send_discord
+def ema(series, n):
+    return series.ewm(span=n, adjust=False).mean()
 
-# ======================================================
-# SECRETS
-# ======================================================
+def sma(series, n):
+    return series.rolling(n).mean()
 
-API_KEY = st.secrets.get("POLYGON_API_KEY")
-WEBHOOK = st.secrets.get("DISCORD_WEBHOOK")
+# ======================
+# ATR
+# ======================
 
-if not API_KEY:
-    st.error("❌ POLYGON_API_KEY manquant dans les secrets")
-    st.stop()
+def atr(df, n=10):
+    high, low, close = df["high"], df["low"], df["close"]
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.rolling(n).mean()
 
-if not WEBHOOK:
-    st.error("❌ DISCORD_WEBHOOK manquant dans les secrets")
-    st.stop()
+# ======================
+# UT BOT (OBLIGATOIRE)
+# ======================
 
-# ======================================================
-# PARAMÈTRES GÉNÉRAUX
-# ======================================================
+def ut_bot(df, key=3, atr_period=10):
+    atr_val = atr(df, atr_period)
+    loss = key * atr_val
+    trail = pd.Series(index=df.index, dtype=float)
 
-FILE_PATH = "russell3000_constituents.xlsx"
-LOOKBACK_DAYS = 400
+    for i in range(len(df)):
+        close = df["close"].iloc[i]
 
-BATCH_SIZE = 300
-SLEEP_API = 0.4
-PROGRESS_FILE = "scan_progress.json"
+        if i == 0 or pd.isna(atr_val.iloc[i]):
+            trail.iloc[i] = close - loss.iloc[i]
+            continue
 
-# ======================================================
-# SESSION HTTP ROBUSTE (ANTI TIMEOUT)
-# ======================================================
+        prev_trail = trail.iloc[i - 1]
+        prev_close = df["close"].iloc[i - 1]
 
-session = requests.Session()
-
-retries = Retry(
-    total=3,
-    backoff_factor=1.5,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"]
-)
-
-adapter = HTTPAdapter(max_retries=retries)
-session.mount("https://", adapter)
-
-# ======================================================
-# POLYGON — DAILY DATA
-# ======================================================
-
-def load_polygon_daily(ticker):
-    end = datetime.utcnow().date()
-    start = end - timedelta(days=LOOKBACK_DAYS)
-
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
-
-    try:
-        r = session.get(
-            url,
-            params={"apiKey": API_KEY, "adjusted": "true"},
-            timeout=30
-        )
-
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-        if "results" not in data:
-            return None
-
-        df = pd.DataFrame(data["results"])
-        if df.empty or len(df) < 200:
-            return None
-
-        df["close"] = df["c"]
-        df["high"] = df["h"]
-        df["low"] = df["l"]
-
-        return df.reset_index(drop=True)
-
-    except Exception:
-        return None
-
-# ======================================================
-# INTERFACE
-# ======================================================
-
-st.title("🎯 Coach Swing — Daily NEW BUY (Batch automatique)")
-
-df_tickers = pd.read_excel(FILE_PATH, engine="openpyxl")
-
-if "Symbol" not in df_tickers.columns:
-    st.error("❌ Colonne 'Symbol' introuvable dans le fichier")
-    st.stop()
-
-tickers = (
-    df_tickers["Symbol"]
-    .dropna()
-    .astype(str)
-    .str.upper()
-    .unique()
-    .tolist()
-)
-
-st.caption(f"📊 Univers total : {len(tickers)} actions")
-
-# ======================================================
-# GESTION DE LA PROGRESSION (BATCH)
-# ======================================================
-
-if os.path.exists(PROGRESS_FILE):
-    with open(PROGRESS_FILE, "r") as f:
-        start_index = json.load(f).get("index", 0)
-else:
-    start_index = 0
-
-end_index = min(start_index + BATCH_SIZE, len(tickers))
-batch_tickers = tickers[start_index:end_index]
-
-st.caption(f"📦 Batch automatique : {start_index + 1} → {end_index}")
-
-# ======================================================
-# SCAN AUTOMATIQUE (SANS BOUTON)
-# ======================================================
-
-st.info("⏳ Scan daily automatique en cours…")
-
-progress = st.progress(0)
-new_buys = []
-
-for i, ticker in enumerate(batch_tickers, start=start_index + 1):
-    df = load_polygon_daily(ticker)
-
-    if df is None:
-        progress.progress((i - start_index) / len(batch_tickers))
-        continue
-
-    # ======================
-    # INDICATEURS
-    # ======================
-
-    ut = ut_bot(df)
-    macd_val, macd_sig = macd(df["close"])
-    k, d = stochastic(df)
-    rsi_val = rsi(df["close"], 12)
-    rsi_ma = sma(rsi_val, 5)
-    cci_val = cci(df)
-    adx_val = adx(df)
-
-    i0 = -1   # aujourd'hui
-    i1 = -2   # hier
-
-    # ======================
-    # LOGIQUE BUY STRICTE (AUJOURD'HUI SEULEMENT)
-    # ======================
-
-    ut_today = (
-        df["close"].iloc[i0] > ut.iloc[i0] and
-        df["close"].iloc[i1] <= ut.iloc[i1]
-    )
-
-    ut_yesterday = (
-        df["close"].iloc[i1] > ut.iloc[i1] and
-        df["close"].iloc[i1-1] <= ut.iloc[i1-1]
-    )
-
-    macd_today = (
-        macd_val.iloc[i0] > macd_sig.iloc[i0] and
-        macd_val.iloc[i0] < 0
-    )
-
-    macd_yesterday = (
-        macd_val.iloc[i1] > macd_sig.iloc[i1] and
-        macd_val.iloc[i1] < 0
-    )
-
-    stoch_today = k.iloc[i0] > d.iloc[i0]
-    stoch_yesterday = k.iloc[i1] > d.iloc[i1]
-
-    buy_today = ut_today and macd_today and stoch_today
-    buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
-
-    # ======================
-    # SCORE (IDENTIQUE À TON PINE)
-    # ======================
-
-    score_today = (
-        (rsi_val.iloc[i0] < 40) +
-        (cci_val.iloc[i0] > cci_val.iloc[i0-1]) +
-        (adx_val.iloc[i0] > 20) +
-        (rsi_val.iloc[i0] > rsi_ma.iloc[i0])
-    )
-
-    # ======================
-    # NEW BUY UNIQUEMENT
-    # ======================
-
-    if buy_today and not buy_yesterday:
-        if score_today >= 3:
-            label = "🟢 BUY VERT"
-        elif score_today >= 1:
-            label = "🟡 BUY JAUNE"
+        if close > prev_trail and prev_close > prev_trail:
+            trail.iloc[i] = max(prev_trail, close - loss.iloc[i])
+        elif close < prev_trail and prev_close < prev_trail:
+            trail.iloc[i] = min(prev_trail, close + loss.iloc[i])
+        elif close > prev_trail:
+            trail.iloc[i] = close - loss.iloc[i]
         else:
-            label = "🔴 BUY ROUGE"
+            trail.iloc[i] = close + loss.iloc[i]
 
-        new_buys.append(f"{label} **{ticker}**")
+    return trail
 
-    progress.progress((i - start_index) / len(batch_tickers))
-    time.sleep(SLEEP_API)
+# ======================
+# MACD
+# ======================
 
-progress.empty()
+def macd(close):
+    macd_val = ema(close, 5) - ema(close, 13)
+    signal = ema(macd_val, 4)
+    return macd_val, signal
 
-# ======================================================
-# SAUVEGARDE DE LA PROGRESSION
-# ======================================================
+# ======================
+# STOCHASTIQUE
+# ======================
 
-if end_index >= len(tickers):
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump({"index": 0}, f)
-    st.success("🔁 Scan Russell 3000 complété — redémarrage au prochain cycle")
-else:
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump({"index": end_index}, f)
+def stochastic(df):
+    low_min = df["low"].rolling(14).min()
+    high_max = df["high"].rolling(14).max()
+    k = 100 * (df["close"] - low_min) / (high_max - low_min)
+    d = sma(k, 2)
+    return k, d
 
-# ======================================================
-# DISCORD
-# ======================================================
+# ======================
+# RSI
+# ======================
 
-if new_buys:
-    message = (
-        "🎯 **COACH SWING — NEW BUY DAILY**\n"
-        f"Batch {start_index + 1} → {end_index}\n\n"
-        + "\n".join(new_buys)
-    )
-    send_discord(WEBHOOK, message)
-    st.success(f"✅ {len(new_buys)} NEW BUY envoyés sur Discord")
-else:
-    st.info("ℹ️ Aucun NEW BUY aujourd’hui dans ce batch")
+def rsi(series, n=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(n).mean()
+    avg_loss = loss.rolling(n).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# ======================
+# CCI
+# ======================
+
+def cci(df, n=20):
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    sma_tp = tp.rolling(n).mean()
+    mad = (tp - sma_tp).abs().rolling(n).mean()
+    return (tp - sma_tp) / (0.015 * mad)
+
+# ======================
+# ADX
+# ======================
+
+def adx(df, n=14):
+    high, low = df["high"], df["low"]
+
+    plus_dm = high.diff()
+    minus_dm = low.diff().abs()
+
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+
+    tr = atr(df, n)
+
+    plus_di = 100 * (plus_dm.rolling(n).sum() / tr)
+    minus_di = 100 * (minus_dm.rolling(n).sum() / tr)
+
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    return dx.rolling(n).mean()
