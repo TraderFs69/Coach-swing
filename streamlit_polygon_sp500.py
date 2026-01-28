@@ -28,7 +28,7 @@ if not WEBHOOK:
     st.stop()
 
 # ======================================================
-# PARAMÈTRES GÉNÉRAUX
+# PARAMÈTRES
 # ======================================================
 
 FILE_PATH = "russell3000_constituents.xlsx"
@@ -37,10 +37,10 @@ LOOKBACK_DAYS = 400
 BATCH_SIZE = 300
 SLEEP_API = 0.4
 PROGRESS_FILE = "scan_progress.json"
-RERUN_DELAY = 5  # secondes entre les batchs
+RERUN_DELAY = 5  # secondes entre batchs
 
 # ======================================================
-# SESSION HTTP ROBUSTE (ANTI TIMEOUT)
+# SESSION HTTP ROBUSTE
 # ======================================================
 
 session = requests.Session()
@@ -116,7 +116,7 @@ tickers = (
 st.caption(f"📊 Univers total : {len(tickers)} actions")
 
 # ======================================================
-# GESTION DE LA PROGRESSION (BATCH)
+# GESTION DE LA PROGRESSION
 # ======================================================
 
 if os.path.exists(PROGRESS_FILE):
@@ -146,9 +146,9 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
         progress.progress((i - start_index) / len(batch_tickers))
         continue
 
-    # ======================
+    # ----------------------
     # INDICATEURS
-    # ======================
+    # ----------------------
 
     ut = ut_bot(df)
     macd_val, macd_sig = macd(df["close"])
@@ -161,9 +161,9 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
     i0 = -1   # aujourd'hui
     i1 = -2   # hier
 
-    # ======================
-    # LOGIQUE BUY STRICTE (AUJOURD'HUI SEULEMENT)
-    # ======================
+    # ----------------------
+    # LOGIQUE BUY STRICTE (AUJOURD’HUI SEULEMENT)
+    # ----------------------
 
     ut_today = (
         df["close"].iloc[i0] > ut.iloc[i0] and
@@ -172,7 +172,7 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
 
     ut_yesterday = (
         df["close"].iloc[i1] > ut.iloc[i1] and
-        df["close"].iloc[i1-1] <= ut.iloc[i1-1]
+        df["close"].iloc[i1 - 1] <= ut.iloc[i1 - 1]
     )
 
     macd_today = (
@@ -191,20 +191,20 @@ for i, ticker in enumerate(batch_tickers, start=start_index + 1):
     buy_today = ut_today and macd_today and stoch_today
     buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
 
-    # ======================
+    # ----------------------
     # SCORE
-    # ======================
+    # ----------------------
 
     score_today = (
         (rsi_val.iloc[i0] < 40) +
-        (cci_val.iloc[i0] > cci_val.iloc[i0-1]) +
+        (cci_val.iloc[i0] > cci_val.iloc[i0 - 1]) +
         (adx_val.iloc[i0] > 20) +
         (rsi_val.iloc[i0] > rsi_ma.iloc[i0])
     )
 
-    # ======================
+    # ----------------------
     # NEW BUY UNIQUEMENT
-    # ======================
+    # ----------------------
 
     if buy_today and not buy_yesterday:
         if score_today >= 3:
@@ -240,7 +240,7 @@ else:
 
     st.info("🔄 Batch suivant dans 5 secondes…")
     time.sleep(RERUN_DELAY)
-    st.experimental_rerun()
+    st.rerun()
 
 # ======================================================
 # DISCORD
