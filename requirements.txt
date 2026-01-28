@@ -1,10 +1,5 @@
-streamlit
-pandas
-numpy
-aiohttp
-python-dotenv
-lxml
-openpyxl
-requests
-ta
-yfinance
+streamlit>=1.31
+pandas>=2.1
+numpy>=1.26
+requests>=2.31
+python-dateutil>=2.8
