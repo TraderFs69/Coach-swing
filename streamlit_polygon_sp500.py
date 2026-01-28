@@ -12,9 +12,9 @@ from urllib3.util.retry import Retry
 from indicators import ut_bot, macd, stochastic, rsi, sma, cci, adx
 from discord import send_discord
 
-# ======================
+# ======================================================
 # SECRETS
-# ======================
+# ======================================================
 
 API_KEY = st.secrets.get("POLYGON_API_KEY")
 WEBHOOK = st.secrets.get("DISCORD_WEBHOOK")
@@ -27,20 +27,20 @@ if not WEBHOOK:
     st.error("❌ DISCORD_WEBHOOK manquant dans les secrets")
     st.stop()
 
-# ======================
-# PARAMÈTRES
-# ======================
+# ======================================================
+# PARAMÈTRES GÉNÉRAUX
+# ======================================================
 
 FILE_PATH = "russell3000_constituents.xlsx"
 LOOKBACK_DAYS = 400
-SLEEP_API = 0.4
 
 BATCH_SIZE = 300
+SLEEP_API = 0.4
 PROGRESS_FILE = "scan_progress.json"
 
-# ======================
-# SESSION HTTP ROBUSTE
-# ======================
+# ======================================================
+# SESSION HTTP ROBUSTE (ANTI TIMEOUT)
+# ======================================================
 
 session = requests.Session()
 
@@ -54,9 +54,9 @@ retries = Retry(
 adapter = HTTPAdapter(max_retries=retries)
 session.mount("https://", adapter)
 
-# ======================
-# POLYGON LOADER (DAILY)
-# ======================
+# ======================================================
+# POLYGON — DAILY DATA
+# ======================================================
 
 def load_polygon_daily(ticker):
     end = datetime.utcnow().date()
@@ -65,16 +65,16 @@ def load_polygon_daily(ticker):
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
 
     try:
-        response = session.get(
+        r = session.get(
             url,
             params={"apiKey": API_KEY, "adjusted": "true"},
             timeout=30
         )
 
-        if response.status_code != 200:
+        if r.status_code != 200:
             return None
 
-        data = response.json()
+        data = r.json()
         if "results" not in data:
             return None
 
@@ -91,11 +91,11 @@ def load_polygon_daily(ticker):
     except Exception:
         return None
 
-# ======================
+# ======================================================
 # INTERFACE
-# ======================
+# ======================================================
 
-st.title("🎯 Coach Swing – Daily NEW BUY (Batch Russell 3000)")
+st.title("🎯 Coach Swing — Daily NEW BUY (Batch automatique)")
 
 df_tickers = pd.read_excel(FILE_PATH, engine="openpyxl")
 
@@ -112,133 +112,137 @@ tickers = (
     .tolist()
 )
 
-st.caption(f"📊 Univers total : {len(tickers)} tickers")
+st.caption(f"📊 Univers total : {len(tickers)} actions")
 
-# ======================
-# GESTION PROGRESSION
-# ======================
+# ======================================================
+# GESTION DE LA PROGRESSION (BATCH)
+# ======================================================
 
 if os.path.exists(PROGRESS_FILE):
     with open(PROGRESS_FILE, "r") as f:
-        progress_data = json.load(f)
-        start_index = progress_data.get("index", 0)
+        start_index = json.load(f).get("index", 0)
 else:
     start_index = 0
 
 end_index = min(start_index + BATCH_SIZE, len(tickers))
 batch_tickers = tickers[start_index:end_index]
 
-st.caption(f"📦 Batch {start_index + 1} → {end_index} / {len(tickers)}")
+st.caption(f"📦 Batch automatique : {start_index + 1} → {end_index}")
 
-if st.button("🚀 Lancer le scan daily"):
-    progress = st.progress(0)
-    new_buys = []
+# ======================================================
+# SCAN AUTOMATIQUE (SANS BOUTON)
+# ======================================================
 
-    for i, ticker in enumerate(batch_tickers, start=start_index + 1):
-        df = load_polygon_daily(ticker)
+st.info("⏳ Scan daily automatique en cours…")
 
-        if df is None:
-            progress.progress((i - start_index) / len(batch_tickers))
-            continue
+progress = st.progress(0)
+new_buys = []
 
-        # === Indicateurs
-        ut = ut_bot(df)
-        macd_val, macd_sig = macd(df["close"])
-        k, d = stochastic(df)
-        rsi_val = rsi(df["close"], 12)
-        rsi_ma = sma(rsi_val, 5)
-        cci_val = cci(df)
-        adx_val = adx(df)
+for i, ticker in enumerate(batch_tickers, start=start_index + 1):
+    df = load_polygon_daily(ticker)
 
-        i0 = -1
-        i_prev = -2
-
-        # === UT récent
-        ut_today = any(
-            df["close"].iloc[i0-j] > ut.iloc[i0-j] and
-            df["close"].iloc[i0-j-1] <= ut.iloc[i0-j-1]
-            for j in range(3)
-        )
-
-        ut_yesterday = any(
-            df["close"].iloc[i_prev-j] > ut.iloc[i_prev-j] and
-            df["close"].iloc[i_prev-j-1] <= ut.iloc[i_prev-j-1]
-            for j in range(3)
-        )
-
-        # === MACD
-        macd_today = any(
-            macd_val.iloc[i0-j] > macd_sig.iloc[i0-j] and macd_val.iloc[i0-j] < 0
-            for j in range(5)
-        )
-
-        macd_yesterday = any(
-            macd_val.iloc[i_prev-j] > macd_sig.iloc[i_prev-j] and macd_val.iloc[i_prev-j] < 0
-            for j in range(5)
-        )
-
-        # === Stoch
-        stoch_today = any(k.iloc[i0-j] > d.iloc[i0-j] for j in range(3))
-        stoch_yesterday = any(k.iloc[i_prev-j] > d.iloc[i_prev-j] for j in range(3))
-
-        # === Score
-        score_today = (
-            (rsi_val.iloc[i0] < 40) +
-            (cci_val.iloc[i0] > cci_val.iloc[i0-1]) +
-            (adx_val.iloc[i0] > 20) +
-            (rsi_val.iloc[i0] > rsi_ma.iloc[i0])
-        )
-
-        buy_today = ut_today and macd_today and stoch_today
-        buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
-
-        if buy_today and not buy_yesterday:
-            if score_today >= 3:
-                label = "🟢 BUY VERT"
-            elif score_today >= 1:
-                label = "🟡 BUY JAUNE"
-            else:
-                label = "🔴 BUY ROUGE"
-
-            new_buys.append(f"{label} **{ticker}**")
-
+    if df is None:
         progress.progress((i - start_index) / len(batch_tickers))
-        time.sleep(SLEEP_API)
-
-    progress.empty()
+        continue
 
     # ======================
-    # SAUVEGARDE PROGRESSION
+    # INDICATEURS
     # ======================
 
-    if end_index >= len(tickers):
-        with open(PROGRESS_FILE, "w") as f:
-            json.dump({"index": 0}, f)
-        st.success("🔁 Scan Russell 3000 complété – redémarrage au prochain run")
-    else:
-        with open(PROGRESS_FILE, "w") as f:
-            json.dump({"index": end_index}, f)
+    ut = ut_bot(df)
+    macd_val, macd_sig = macd(df["close"])
+    k, d = stochastic(df)
+    rsi_val = rsi(df["close"], 12)
+    rsi_ma = sma(rsi_val, 5)
+    cci_val = cci(df)
+    adx_val = adx(df)
+
+    i0 = -1   # aujourd'hui
+    i1 = -2   # hier
 
     # ======================
-    # DISCORD
+    # LOGIQUE BUY STRICTE (AUJOURD'HUI SEULEMENT)
     # ======================
 
-    if new_buys:
-        message = (
-            "🎯 **COACH SWING – NEW BUY DAILY**\n"
-            f"Batch {start_index + 1} → {end_index}\n\n"
-            + "\n".join(new_buys)
-        )
-        send_discord(WEBHOOK, message)
-        st.success(f"✅ {len(new_buys)} NEW BUY envoyés sur Discord")
-    else:
-        st.info("ℹ️ Aucun NEW BUY dans ce batch")
+    ut_today = (
+        df["close"].iloc[i0] > ut.iloc[i0] and
+        df["close"].iloc[i1] <= ut.iloc[i1]
+    )
 
-# ======================
-# RESET MANUEL
-# ======================
+    ut_yesterday = (
+        df["close"].iloc[i1] > ut.iloc[i1] and
+        df["close"].iloc[i1-1] <= ut.iloc[i1-1]
+    )
 
-if st.button("🔄 Réinitialiser le scan complet"):
+    macd_today = (
+        macd_val.iloc[i0] > macd_sig.iloc[i0] and
+        macd_val.iloc[i0] < 0
+    )
+
+    macd_yesterday = (
+        macd_val.iloc[i1] > macd_sig.iloc[i1] and
+        macd_val.iloc[i1] < 0
+    )
+
+    stoch_today = k.iloc[i0] > d.iloc[i0]
+    stoch_yesterday = k.iloc[i1] > d.iloc[i1]
+
+    buy_today = ut_today and macd_today and stoch_today
+    buy_yesterday = ut_yesterday and macd_yesterday and stoch_yesterday
+
+    # ======================
+    # SCORE (IDENTIQUE À TON PINE)
+    # ======================
+
+    score_today = (
+        (rsi_val.iloc[i0] < 40) +
+        (cci_val.iloc[i0] > cci_val.iloc[i0-1]) +
+        (adx_val.iloc[i0] > 20) +
+        (rsi_val.iloc[i0] > rsi_ma.iloc[i0])
+    )
+
+    # ======================
+    # NEW BUY UNIQUEMENT
+    # ======================
+
+    if buy_today and not buy_yesterday:
+        if score_today >= 3:
+            label = "🟢 BUY VERT"
+        elif score_today >= 1:
+            label = "🟡 BUY JAUNE"
+        else:
+            label = "🔴 BUY ROUGE"
+
+        new_buys.append(f"{label} **{ticker}**")
+
+    progress.progress((i - start_index) / len(batch_tickers))
+    time.sleep(SLEEP_API)
+
+progress.empty()
+
+# ======================================================
+# SAUVEGARDE DE LA PROGRESSION
+# ======================================================
+
+if end_index >= len(tickers):
     with open(PROGRESS_FILE, "w") as f:
         json.dump({"index": 0}, f)
-    st.success("Progression réinitialisée")
+    st.success("🔁 Scan Russell 3000 complété — redémarrage au prochain cycle")
+else:
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump({"index": end_index}, f)
+
+# ======================================================
+# DISCORD
+# ======================================================
+
+if new_buys:
+    message = (
+        "🎯 **COACH SWING — NEW BUY DAILY**\n"
+        f"Batch {start_index + 1} → {end_index}\n\n"
+        + "\n".join(new_buys)
+    )
+    send_discord(WEBHOOK, message)
+    st.success(f"✅ {len(new_buys)} NEW BUY envoyés sur Discord")
+else:
+    st.info("ℹ️ Aucun NEW BUY aujourd’hui dans ce batch")
