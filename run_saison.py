@@ -170,3 +170,264 @@ print(
 # ======================================================
 
 new_buys = []
+
+for idx, ticker in enumerate(
+    batch_tickers,
+    start=start_index + 1
+):
+
+    print(
+        f"{idx}/{len(tickers)} "
+        f"{ticker}"
+    )
+
+    df = load_polygon_daily(ticker)
+
+    if df is None:
+        continue
+
+    try:
+
+        # ======================
+        # INDICATEURS
+        # ======================
+
+        ut = ut_bot(df)
+
+        macd_val, macd_sig = macd(
+            df["close"]
+        )
+
+        k, d = stochastic(df)
+
+        rsi_val = rsi(
+            df["close"],
+            12
+        )
+
+        rsi_ma = sma(
+            rsi_val,
+            5
+        )
+
+        cci_val = cci(df)
+
+        adx_val = adx(df)
+
+        # ======================
+        # DERNIÈRE BOUGIE
+        # ======================
+
+        i0 = -2
+        i1 = -3
+
+        signal_date = str(
+            df["date"].iloc[i0]
+        )
+
+        # ======================
+        # CONDITIONS
+        # ======================
+
+        ut_today = (
+            df["close"].iloc[i0]
+            > ut.iloc[i0]
+            and
+            df["close"].iloc[i1]
+            <= ut.iloc[i1]
+        )
+
+        macd_today = (
+            macd_val.iloc[i0]
+            > macd_sig.iloc[i0]
+            and
+            macd_val.iloc[i0] < 0
+        )
+
+        stoch_today = (
+            k.iloc[i0]
+            > d.iloc[i0]
+        )
+
+        ut_yesterday = (
+            df["close"].iloc[i1]
+            > ut.iloc[i1]
+            and
+            df["close"].iloc[i1 - 1]
+            <= ut.iloc[i1 - 1]
+        )
+
+        macd_yesterday = (
+            macd_val.iloc[i1]
+            > macd_sig.iloc[i1]
+            and
+            macd_val.iloc[i1] < 0
+        )
+
+        stoch_yesterday = (
+            k.iloc[i1]
+            > d.iloc[i1]
+        )
+
+        # ======================
+        # MODE
+        # ======================
+
+        if TOLERANT_MODE:
+
+            buy_today = (
+                ut_today
+                and
+                (
+                    macd_today
+                    or
+                    stoch_today
+                )
+            )
+
+            buy_yesterday = (
+                ut_yesterday
+                and
+                (
+                    macd_yesterday
+                    or
+                    stoch_yesterday
+                )
+            )
+
+        else:
+
+            buy_today = (
+                ut_today
+                and
+                macd_today
+                and
+                stoch_today
+            )
+
+            buy_yesterday = (
+                ut_yesterday
+                and
+                macd_yesterday
+                and
+                stoch_yesterday
+            )
+
+        # ======================
+        # SCORE
+        # ======================
+
+        score_today = (
+            (rsi_val.iloc[i0] < 40)
+            +
+            (
+                cci_val.iloc[i0]
+                >
+                cci_val.iloc[i0 - 1]
+            )
+            +
+            (adx_val.iloc[i0] > 20)
+            +
+            (
+                rsi_val.iloc[i0]
+                >
+                rsi_ma.iloc[i0]
+            )
+        )
+
+        # ======================
+        # NEW BUY
+        # ======================
+
+        if buy_today and not buy_yesterday:
+
+            if score_today >= 3:
+                label = "🟢 BUY VERT"
+
+            elif score_today >= 1:
+                label = "🟡 BUY JAUNE"
+
+            else:
+                label = "🔴 BUY ROUGE"
+
+            new_buys.append(
+                f"{label} "
+                f"**{ticker}** "
+                f"📅 {signal_date}"
+            )
+
+    except Exception as e:
+
+        print(
+            f"Erreur {ticker}: {e}"
+        )
+
+    time.sleep(SLEEP_API)
+
+# ======================================================
+# DISCORD
+# ======================================================
+
+if len(new_buys) > 0:
+
+    message = (
+        "🎯 **COACH SWING — NEW BUY DAILY**\n\n"
+        f"Batch : {start_index + 1}"
+        f" → {end_index}\n"
+        f"Mode : "
+        f"{'Tolérant' if TOLERANT_MODE else 'Strict'}\n\n"
+        +
+        "\n".join(new_buys)
+    )
+
+    send_discord(
+        WEBHOOK,
+        message
+    )
+
+    print(
+        f"{len(new_buys)} signaux envoyés"
+    )
+
+else:
+
+    print(
+        "Aucun NEW BUY détecté"
+    )
+
+# ======================================================
+# SAUVEGARDE PROGRESSION
+# ======================================================
+
+if end_index >= len(tickers):
+
+    with open(
+        PROGRESS_FILE,
+        "w"
+    ) as f:
+
+        json.dump(
+            {"index": 0},
+            f
+        )
+
+    print(
+        "Scan Russell 3000 terminé"
+    )
+
+else:
+
+    with open(
+        PROGRESS_FILE,
+        "w"
+    ) as f:
+
+        json.dump(
+            {"index": end_index},
+            f
+        )
+
+    print(
+        f"Prochain batch : "
+        f"{end_index}"
+    )
